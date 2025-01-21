@@ -31,7 +31,7 @@ def execute_query(conn, query: str):
         cursor = conn.cursor()
         cursor.execute(query)
         # Use fetchall() if you expect multiple rows; fetchone() if you want the first row, etc.
-        records = cursor.Fetchone()
+        records = cursor.fetchone()
     except Error as e:
         print(f"Error executing query: {e}")
     finally:
