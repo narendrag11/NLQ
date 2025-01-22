@@ -18,6 +18,34 @@ from models import *  # Ensure your models are correctly defined in this module
 from dotenv import load_dotenv
 import os
 load_dotenv()
+from langchain_community.utilities import SQLDatabase
+from langchain_community.agent_toolkits import SQLDatabaseToolkit
+# from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+llm = ChatGoogleGenerativeAI(
+    model="gemini-1.5-flash",
+    temperature=0,
+    max_tokens=None,
+    timeout=None,
+    max_retries=2,
+)
+db = SQLDatabase.from_uri("postgresql://postgres:password@localhost:5432/Autobi_DB")
+toolkit = SQLDatabaseToolkit(db=db, llm=llm)
+tools = toolkit.get_tools()
+@tool
+def db_query_tool(query: str) -> str:
+    """
+    Execute a SQL query against the database and get back the result.
+    If the query is not correct, an error message will be returned.
+    If an error is returned, rewrite the query, check the query, and try again.
+    """
+    result = db.run_no_throw(query)
+    if not result:
+        return "Error: Query failed. Please rewrite your query and try again."
+    return result
+
+
 
 # Retrieve the Google API key from environment variables or prompt the user
 google_api_key = os.getenv("GOOGLE_API_KEY")
@@ -45,14 +73,7 @@ except Exception as e:
     raise
 
 # Initialize embeddings and language model
-embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
-    temperature=0,
-    max_tokens=None,
-    timeout=None,
-    max_retries=2,
-)
+
 
 
 
@@ -494,8 +515,47 @@ def sql_query(state: State) -> State:
     state["sql_query"] = ai_response
     return state
 
+def should_continue(state: State) -> Literal[ END, "sql query"]:
+    messages = state["messages"]
+    last_message = messages[-1]
+    # If there is a tool call, then we finish
+    if getattr(last_message, "tool_calls", None):
+        return END
+    if last_message.content.startswith("Error:"):
+        return "sql query"
+    else:
+        return "correct_query"
+from langchain_core.prompts import ChatPromptTemplate
 
+query_check_system = """You are a SQL expert with a strong attention to detail.
+Double check the SQLite query for common mistakes, including:
+- Using NOT IN with NULL values
+- Using UNION when UNION ALL should have been used
+- Using BETWEEN for exclusive ranges
+- Data type mismatch in predicates
+- Properly quoting identifiers
+- Using the correct number of arguments for functions
+- Casting to the correct data type
+- Using the proper columns for joins
 
+If there are any of the above mistakes, rewrite the query. If there are no mistakes, just reproduce the original query.
+
+You will call the appropriate tool to execute the query after running this check."""
+
+query_check_prompt = ChatPromptTemplate.from_messages(
+    [("system", query_check_system), ("placeholder", "{messages}")]
+)
+query_check = query_check_prompt | ChatGoogleGenerativeAI(
+    model="gemini-1.5-flash",
+    temperature=0,
+    max_tokens=None,
+    timeout=None,
+    max_retries=2,
+).bind_tools(
+    [db_query_tool], tool_choice="required"
+)
+
+query_check.invoke({"messages": [("user", "SELECT * FROM Artist LIMIT 10;")]})
 workflow = StateGraph(State)
 
     # config_schema=GraphConfig
@@ -508,12 +568,17 @@ workflow.add_node("Datasource Agent", datasources_agent)
 workflow.add_node("Column Agent", column_agent)
 workflow.add_node("sql query",sql_query)
 
+
 # Define the edges to establish the execution order
 workflow.add_edge(START, "Intent Agent")
 workflow.add_edge("Intent Agent", "Domain Agent")
 workflow.add_edge("Domain Agent", "Datasource Agent")
 workflow.add_edge("Datasource Agent", "Column Agent")
 workflow.add_edge("Column Agent","sql query")
+workflow.add_conditional_edges(
+    "sql query",
+    should_continue,
+)
 workflow.add_edge("sql query", END)
 
 # Compile the workflow into an executable application
