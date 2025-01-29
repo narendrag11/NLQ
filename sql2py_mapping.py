@@ -17,7 +17,7 @@ def map_sqlalchemy_type(sqlalchemy_type):
         return dict  # Represent STRUCT as dictionary
     
     elif str(sqlalchemy_type).startswith("GEOGRAPHY"):
-        return "GEOGRAPHY"  # Custom string representation
+        return dict  # Custom string representation
     
     elif str(sqlalchemy_type).startswith("JSON"):
         return dict  # JSON should be mapped as a dictionary
